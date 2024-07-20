@@ -167,6 +167,7 @@ class TreeMamba(nn.Module):
         #         return out
 
         # We do matmul and transpose BLH -> HBL at the same time
+        # xz = self.in_proj(hidden_stats)
         xz = rearrange(
             self.in_proj.weight @ rearrange(hidden_states, "b l d -> d (b l)"),
             "d (b l) -> b d l",
@@ -175,22 +176,22 @@ class TreeMamba(nn.Module):
         if self.in_proj.bias is not None:
             xz = xz + rearrange(self.in_proj.bias.to(dtype=xz.dtype), "d -> d 1")
 
-        A = -torch.exp(self.A_log.float())  # (d_inner, d_state)
         # In the backward pass we write dx and dz next to each other to avoid torch.cat
         x, z = xz.chunk(2, dim=1)
         x = self.act(self.tree_conv(x, conv_indices))
+        y = torch.zeros(batch, seqlen, dim, dtype=hidden_states.dtype, device=hidden_states.device)
 
         init_batch_size = indices_list[-1].shape[0]
         ssm_state = self.allocate_inference_cache(init_batch_size)
-        level_x = x[indices_list[-1][:, 0], :, indices_list[-1][:, 1]].unsqueeze(1)
-        level_z = z[indices_list[-1][:, 0], :, indices_list[-1][:, 1]].unsqueeze(1)
+        indices = indices_list[-1]
+        level_x = x[indices[:, 0], :, indices[:, 1]].unsqueeze(1)
+        level_z = z[indices[:, 0], :, indices[:, 1]].unsqueeze(1)
         level_y, ssm_state = self.step(level_x, level_z, ssm_state)
-        indices_list.pop()
-        state_indices.pop()
-        indices_list.reverse()
-        state_indices.reverse()
+        y[indices[:, 0], indices[:, 1], :] = level_y.squeeze()
 
-        for indices, states in zip(indices_list, state_indices):
+        for level in reversed(range(len(indices_list) - 1)):
+            indices = indices_list[level]
+            states = state_indices[level]
             ssm_state = F.pad(ssm_state, (0, 0, 0, 0, 1, 0))
             left_ssm_state = ssm_state[states[:, 0], :, :]
             right_ssm_state = ssm_state[states[:, 1], :, :]
@@ -198,7 +199,9 @@ class TreeMamba(nn.Module):
             level_x = x[indices[:, 0], :, indices[:, 1]].unsqueeze(1)
             level_z = z[indices[:, 0], :, indices[:, 1]].unsqueeze(1)
             level_y, ssm_state = self.step(level_x, level_z, ssm_state)
-        return level_y
+            y[indices[:, 0], indices[:, 1], :] = level_y.squeeze()
+
+        return y
 
     def step(self, x, z, ssm_state):
         dtype = x.dtype
