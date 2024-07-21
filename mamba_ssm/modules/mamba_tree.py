@@ -216,19 +216,14 @@ class TreeMamba(nn.Module):
         A = -torch.exp(self.A_log.float())  # (d_inner, d_state)
 
         # SSM step
-        if selective_state_update is None:
-            # Discretize A and B
-            dt = F.softplus(dt + self.dt_proj.bias.to(dtype=dt.dtype))
-            dA = torch.exp(torch.einsum("bd,dn->bdn", dt, A))
-            dB = torch.einsum("bd,bn->bdn", dt, B)
-            ssm_state.copy_(ssm_state * dA + rearrange(x, "b d -> b d 1") * dB)
-            y = torch.einsum("bdn,bn->bd", ssm_state.to(dtype), C)
-            y = y + self.D.to(dtype) * x
-            y = y * self.act(z)  # (B D)
-        else:
-            y = selective_state_update(
-                ssm_state, x, dt, A, B, C, self.D, z=z, dt_bias=self.dt_proj.bias, dt_softplus=True
-            )
+        # Discretize A and B
+        dt = F.softplus(dt + self.dt_proj.bias.to(dtype=dt.dtype))
+        dA = torch.exp(torch.einsum("bd,dn->bdn", dt, A))
+        dB = torch.einsum("bd,bn->bdn", dt, B)
+        ssm_state = ssm_state * dA + rearrange(x, "b d -> b d 1") * dB
+        y = torch.einsum("bdn,bn->bd", ssm_state.to(dtype), C)
+        y = y + self.D.to(dtype) * x
+        y = y * self.act(z)  # (B D)
 
         out = self.out_proj(y)
         return out.unsqueeze(1), ssm_state
